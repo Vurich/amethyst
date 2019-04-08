@@ -5,8 +5,9 @@ use amethyst_assets::{
 use amethyst_core::ecs::{Entity, Read, ReadExpect};
 use amethyst_error::Error;
 use rendy::{
-    hal::Backend,
+    hal::{self, Backend, image::{Filter, Kind, ViewKind, Size}},
     texture::{
+        pixel::{AsPixel, Rgba8Srgb},
         image::{load_from_image, ImageTextureConfig},
         TextureBuilder,
     },
@@ -45,12 +46,63 @@ where
     /// Texture data
     Data(TextureBuilder<'static>),
 
+    // Generate texture
+    Generate(TextureGenerator),
+
     /// Load file with format
     File(String, F, F::Options),
 
     /// Clone handle only
     #[serde(skip)]
     Handle(Handle<Texture<B>>),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum TextureGenerator {
+    Srgba(f32, f32, f32, f32),
+    LinearRgba(f32, f32, f32, f32),
+    //LinearRgbaFloat(f32, f32, f32, f32),
+    SrgbaCorners([(f32, f32, f32, f32); 4], Filter),
+}
+
+fn simple_builder<A: AsPixel>(data: Vec<A>, size: Size, filter: Filter) -> TextureBuilder<'static> {
+    TextureBuilder::new()
+        .with_kind(Kind::D2(size,size,1,1))
+        .with_view_kind(ViewKind::D2)
+        .with_data_width(size)
+        .with_data_height(size)
+        .with_sampler_info(hal::image::SamplerInfo::new(
+            filter,
+            hal::image::WrapMode::Clamp,
+        ))
+        .with_data(data)
+}
+
+impl TextureGenerator {
+    fn data(&self) -> TextureBuilder<'static> {
+        use rendy::texture::palette::{
+            load_from_srgba, load_from_linear_rgba
+        };
+        use palette::{Srgba, LinSrgba};
+        match *self {
+            TextureGenerator::Srgba(red, green, blue, alpha) => load_from_srgba(
+                Srgba::new(red, green, blue, alpha)
+            ),
+            TextureGenerator::LinearRgba(red, green, blue, alpha) => load_from_linear_rgba(
+                LinSrgba::new(red, green, blue, alpha)
+            ),
+            //TextureGenerator::LinearRgbaFloat(red, green, blue, alpha) => load_from_linear_rgba_f32(
+            //    LinSrgba::new(red, green, blue, alpha)
+            //),
+            TextureGenerator::SrgbaCorners(corners, filter) => simple_builder::<Rgba8Srgb> (
+                corners.iter().map(|(red, green, blue, alpha)|{
+                    palette::Srgba::new(*red, *green, *blue, *alpha).into()
+                }).collect(),
+                2,
+                filter
+            ),
+        }
+    }
 }
 
 impl<'a, B: Backend, F> PrefabData<'a> for TexturePrefab<B, F>
@@ -76,6 +128,13 @@ where
                     .load_from_data(data.clone(), (), &system_data.1)
             }
 
+            TexturePrefab::Generate(ref generator) => {
+                let data = generator.data();
+                system_data
+                    .0
+                    .load_from_data(data, (), &system_data.1)
+            },
+
             TexturePrefab::File(..) => unreachable!(),
 
             TexturePrefab::Handle(ref handle) => handle.clone(),
@@ -94,6 +153,15 @@ where
                 progress,
                 &system_data.1,
             )),
+
+            TexturePrefab::Generate(ref generator) => {
+                let data = generator.data();
+                Some(system_data.0.load_from_data(
+                    data,
+                    progress,
+                    &system_data.1,
+                ))
+            },
 
             TexturePrefab::File(ref name, ref format, ref options) => Some(system_data.0.load(
                 name.as_ref(),
