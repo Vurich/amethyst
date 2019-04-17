@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use shred_derive::SystemData;
@@ -342,6 +342,15 @@ where
 
     /// From file, (name, format, format options)
     File(String, F, F::Options),
+
+    #[serde(skip)]
+    /// From file, (name, format, format options, function to get replacement asset if loading failed)
+    FileOrElse(
+        String,
+        F,
+        F::Options,
+        Arc<dyn Fn(amethyst_error::Error) -> Result<A::Data, amethyst_error::Error> + Send + Sync>,
+    ),
 }
 
 impl<'a, A, F> PrefabData<'a> for AssetPrefab<A, F>
@@ -367,7 +376,7 @@ where
     ) -> Result<Handle<A>, Error> {
         let handle = match *self {
             AssetPrefab::Handle(ref handle) => handle.clone(),
-            AssetPrefab::File(..) => unreachable!(),
+            AssetPrefab::File(..) | AssetPrefab::FileOrElse(..) => unreachable!(),
         };
         Ok(system_data
             .1
@@ -380,16 +389,25 @@ where
         progress: &mut ProgressCounter,
         system_data: &mut Self::SystemData,
     ) -> Result<bool, Error> {
-        let handle = if let AssetPrefab::File(ref name, ref format, ref options) = *self {
-            Some(system_data.0.load(
+        let handle = match self {
+            AssetPrefab::File(name, format, options) => Some(system_data.0.load(
                 name.as_ref(),
                 format.clone(),
                 options.clone(),
                 progress,
                 &system_data.2,
-            ))
-        } else {
-            None
+            )),
+            AssetPrefab::FileOrElse(name, format, options, or_else) => {
+                Some(system_data.0.load_or_else(
+                    name.as_ref(),
+                    format.clone(),
+                    options.clone(),
+                    progress,
+                    &system_data.2,
+                    or_else.clone(),
+                ))
+            }
+            AssetPrefab::Handle(..) => None,
         };
         if let Some(handle) = handle {
             *self = AssetPrefab::Handle(handle);
