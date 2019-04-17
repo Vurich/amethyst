@@ -7,10 +7,10 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::{Deserialize, Serialize};
 
 use amethyst_assets::{
-    AssetStorage, Format, Handle, Loader, PrefabData, ProcessingState, ProgressCounter,
-    SimpleFormat,
+    AssetPrefab, AssetStorage, Format, Handle, Loader, PrefabData, ProcessingState,
+    ProgressCounter, SimpleFormat,
 };
-use amethyst_core::ecs::prelude::{Entity, Read, ReadExpect};
+use amethyst_core::ecs::prelude::{Entity, Read, ReadExpect, WriteStorage};
 use amethyst_error::{Error, ResultExt};
 
 use crate::{
@@ -212,39 +212,39 @@ where
     /// Texture data
     Data(TextureData),
 
-    /// Load file with format
-    File(String, F, TextureMetadata),
-
-    /// Clone handle only
-    #[serde(skip)]
-    Handle(Handle<Texture>),
+    /// File or handle
+    Asset(AssetPrefab<Texture, F>),
 }
 
 impl<'a, F> PrefabData<'a> for TexturePrefab<F>
 where
     F: Format<Texture, Options = TextureMetadata> + Clone + Sync,
 {
-    type SystemData = (ReadExpect<'a, Loader>, Read<'a, AssetStorage<Texture>>);
+    type SystemData = (
+        ReadExpect<'a, Loader>,
+        WriteStorage<'a, Handle<Texture>>,
+        Read<'a, AssetStorage<Texture>>,
+    );
 
     type Result = Handle<Texture>;
 
     fn add_to_entity(
         &self,
-        _: Entity,
+        ent: Entity,
         system_data: &mut Self::SystemData,
-        _: &[Entity],
-        _: &[Entity],
+        entities: &[Entity],
+        children: &[Entity],
     ) -> Result<Handle<Texture>, Error> {
         let handle = match *self {
             TexturePrefab::Data(ref data) => {
                 system_data
                     .0
-                    .load_from_data(data.clone(), (), &system_data.1)
+                    .load_from_data(data.clone(), (), &system_data.2)
             }
 
-            TexturePrefab::File(..) => unreachable!(),
-
-            TexturePrefab::Handle(ref handle) => handle.clone(),
+            TexturePrefab::Asset(ref asset) => {
+                asset.add_to_entity(ent, system_data, entities, children)?
+            }
         };
         Ok(handle)
     }
@@ -255,24 +255,19 @@ where
         system_data: &mut Self::SystemData,
     ) -> Result<bool, Error> {
         let handle = match *self {
-            TexturePrefab::Data(ref data) => Some(system_data.0.load_from_data(
+            TexturePrefab::Data(ref mut data) => Some(system_data.0.load_from_data(
                 data.clone(),
                 progress,
-                &system_data.1,
+                &system_data.2,
             )),
 
-            TexturePrefab::File(ref name, ref format, ref options) => Some(system_data.0.load(
-                name.as_ref(),
-                format.clone(),
-                options.clone(),
-                progress,
-                &system_data.1,
-            )),
-
-            TexturePrefab::Handle(_) => None,
+            TexturePrefab::Asset(ref mut asset) => {
+                return asset.load_sub_assets(progress, system_data);
+            }
         };
+
         if let Some(handle) = handle {
-            *self = TexturePrefab::Handle(handle);
+            *self = TexturePrefab::Asset(AssetPrefab::Handle(handle));
             Ok(true)
         } else {
             Ok(false)

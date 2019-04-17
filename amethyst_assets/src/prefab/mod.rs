@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt, marker::PhantomData, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use shred_derive::SystemData;
@@ -351,6 +351,40 @@ where
         F::Options,
         Arc<dyn Fn(amethyst_error::Error) -> Result<A::Data, amethyst_error::Error> + Send + Sync>,
     ),
+}
+
+impl<A, F> fmt::Debug for AssetPrefab<A, F>
+where
+    A: Asset,
+    Handle<A>: fmt::Debug,
+    F: fmt::Debug + Format<A>,
+    F::Options: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct Fallback;
+
+        impl fmt::Debug for Fallback {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{{function}}")
+            }
+        }
+
+        #[derive(Debug)]
+        enum Shim<'a, Handle, Fmt, Opts> {
+            Handle(&'a Handle),
+            File(&'a str, &'a Fmt, &'a Opts),
+            FileOrElse(&'a str, &'a Fmt, &'a Opts, Fallback),
+        }
+
+        match self {
+            AssetPrefab::Handle(handle) => Shim::Handle(handle),
+            AssetPrefab::File(name, format, opts) => Shim::File(name, format, opts),
+            AssetPrefab::FileOrElse(name, format, opts, _) => {
+                Shim::FileOrElse(name, format, opts, Fallback)
+            }
+        }
+        .fmt(f)
+    }
 }
 
 impl<'a, A, F> PrefabData<'a> for AssetPrefab<A, F>
