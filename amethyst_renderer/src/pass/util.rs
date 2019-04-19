@@ -420,6 +420,7 @@ pub(crate) fn draw_mesh(
 
     effect.draw(mesh.slice(), encoder);
     effect.clear();
+
 }
 
 /// Returns the main camera and its `GlobalTransform`

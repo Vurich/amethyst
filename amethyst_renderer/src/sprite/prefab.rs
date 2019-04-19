@@ -1,7 +1,7 @@
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use amethyst_assets::{AssetPrefab, AssetStorage, PrefabData, ProgressCounter};
+use amethyst_assets::{AssetStorage, PrefabData, ProgressCounter};
 use amethyst_core::{
     ecs::{Entity, Read, Write, WriteStorage},
     Transform,
@@ -138,7 +138,7 @@ impl<'a> PrefabData<'a> for SpriteSheetPrefab {
             } => {
                 texture.load_sub_assets(progress, &mut system_data.0)?;
                 let texture_handle = match texture {
-                    TexturePrefab::Asset(AssetPrefab::Handle(handle)) => handle.clone(),
+                    TexturePrefab::Handle(handle) => handle.clone(),
                     _ => unreachable!(),
                 };
                 let sprites = sprites.iter().flat_map(Sprites::build_sprites).collect();

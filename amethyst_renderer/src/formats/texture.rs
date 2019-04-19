@@ -5,12 +5,13 @@ use gfx::{
 };
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::{Deserialize, Serialize};
+use std::{fmt, sync::Arc};
 
 use amethyst_assets::{
-    AssetPrefab, AssetStorage, Format, Handle, Loader, PrefabData, ProcessingState,
-    ProgressCounter, SimpleFormat,
+    AssetStorage, Format, Handle, Loader, PrefabData, ProcessingState, ProgressCounter,
+    SimpleFormat,
 };
-use amethyst_core::ecs::prelude::{Entity, Read, ReadExpect, WriteStorage};
+use amethyst_core::ecs::prelude::{Entity, Read, ReadExpect};
 use amethyst_error::{Error, ResultExt};
 
 use crate::{
@@ -204,7 +205,7 @@ impl<'a> PrefabData<'a> for TextureData {
 /// ### Type parameters:
 ///
 /// - `F`: `Format` to use for loading the `Texture`s from file
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub enum TexturePrefab<F>
 where
     F: Format<Texture, Options = TextureMetadata>,
@@ -212,39 +213,85 @@ where
     /// Texture data
     Data(TextureData),
 
-    /// File or handle
-    Asset(AssetPrefab<Texture, F>),
+    /// From existing handle
+    #[serde(skip)]
+    Handle(Handle<Texture>),
+
+    /// From file, (name, format, format options)
+    File(String, F, F::Options),
+
+    #[serde(skip)]
+    /// From file, (name, format, format options, function to get replacement asset if loading failed)
+    FileOrElse(
+        String,
+        F,
+        F::Options,
+        Arc<
+            dyn Fn(amethyst_error::Error) -> Result<TextureData, amethyst_error::Error>
+                + Send
+                + Sync,
+        >,
+    ),
+}
+
+impl<F> fmt::Debug for TexturePrefab<F>
+where
+    F: fmt::Debug + Format<Texture, Options = TextureMetadata>,
+    F::Options: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct Fallback;
+
+        impl fmt::Debug for Fallback {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{{function}}")
+            }
+        }
+
+        #[derive(Debug)]
+        enum Shim<'a, Handle, Fmt, Opts> {
+            Data(&'a TextureData),
+            Handle(&'a Handle),
+            File(&'a str, &'a Fmt, &'a Opts),
+            FileOrElse(&'a str, &'a Fmt, &'a Opts, Fallback),
+        }
+
+        match self {
+            TexturePrefab::Data(data) => Shim::Data(data),
+            TexturePrefab::Handle(handle) => Shim::Handle(handle),
+            TexturePrefab::File(name, format, opts) => Shim::File(name, format, opts),
+            TexturePrefab::FileOrElse(name, format, opts, _) => {
+                Shim::FileOrElse(name, format, opts, Fallback)
+            }
+        }
+        .fmt(f)
+    }
 }
 
 impl<'a, F> PrefabData<'a> for TexturePrefab<F>
 where
     F: Format<Texture, Options = TextureMetadata> + Clone + Sync,
 {
-    type SystemData = (
-        ReadExpect<'a, Loader>,
-        WriteStorage<'a, Handle<Texture>>,
-        Read<'a, AssetStorage<Texture>>,
-    );
+    type SystemData = (ReadExpect<'a, Loader>, Read<'a, AssetStorage<Texture>>);
 
     type Result = Handle<Texture>;
 
     fn add_to_entity(
         &self,
-        ent: Entity,
+        _: Entity,
         system_data: &mut Self::SystemData,
-        entities: &[Entity],
-        children: &[Entity],
+        _: &[Entity],
+        _: &[Entity],
     ) -> Result<Handle<Texture>, Error> {
         let handle = match *self {
             TexturePrefab::Data(ref data) => {
                 system_data
                     .0
-                    .load_from_data(data.clone(), (), &system_data.2)
+                    .load_from_data(data.clone(), (), &system_data.1)
             }
 
-            TexturePrefab::Asset(ref asset) => {
-                asset.add_to_entity(ent, system_data, entities, children)?
-            }
+            TexturePrefab::Handle(ref handle) => handle.clone(),
+            _ => unreachable!(),
         };
         Ok(handle)
     }
@@ -252,22 +299,33 @@ where
     fn load_sub_assets(
         &mut self,
         progress: &mut ProgressCounter,
-        system_data: &mut Self::SystemData,
+        (loader, storage): &mut Self::SystemData,
     ) -> Result<bool, Error> {
-        let handle = match *self {
-            TexturePrefab::Data(ref mut data) => Some(system_data.0.load_from_data(
-                data.clone(),
-                progress,
-                &system_data.2,
-            )),
-
-            TexturePrefab::Asset(ref mut asset) => {
-                return asset.load_sub_assets(progress, system_data);
+        let handle = match self {
+            TexturePrefab::Data(data) => {
+                Some(loader.load_from_data(data.clone(), progress, &storage))
             }
+
+            TexturePrefab::File(name, format, options) => Some(loader.load(
+                name.as_ref(),
+                format.clone(),
+                options.clone(),
+                progress,
+                &storage,
+            )),
+            TexturePrefab::FileOrElse(name, format, options, or_else) => Some(loader.load_or_else(
+                name.as_ref(),
+                format.clone(),
+                options.clone(),
+                progress,
+                &storage,
+                or_else.clone(),
+            )),
+            TexturePrefab::Handle(..) => None,
         };
 
         if let Some(handle) = handle {
-            *self = TexturePrefab::Asset(AssetPrefab::Handle(handle));
+            *self = TexturePrefab::Handle(handle);
             Ok(true)
         } else {
             Ok(false)

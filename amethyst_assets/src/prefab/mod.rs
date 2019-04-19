@@ -353,6 +353,46 @@ where
     ),
 }
 
+impl<'a, A, F> AssetPrefab<A, F>
+where
+    A: Asset,
+    F: Format<A> + Clone,
+    F::Options: Clone,
+{
+    pub fn do_load_sub_assets(
+        &mut self,
+        progress: &mut ProgressCounter,
+        loader: &mut ReadExpect<'a, Loader>,
+        storage: &mut Read<'a, AssetStorage<A>>,
+    ) -> Result<bool, Error> {
+        let handle = match self {
+            AssetPrefab::File(name, format, options) => Some(loader.load(
+                name.as_ref(),
+                format.clone(),
+                options.clone(),
+                progress,
+                &storage,
+            )),
+            AssetPrefab::FileOrElse(name, format, options, or_else) => Some(loader.load_or_else(
+                name.as_ref(),
+                format.clone(),
+                options.clone(),
+                progress,
+                &storage,
+                or_else.clone(),
+            )),
+            AssetPrefab::Handle(..) => None,
+        };
+
+        if let Some(handle) = handle {
+            *self = AssetPrefab::Handle(handle);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
 impl<A, F> fmt::Debug for AssetPrefab<A, F>
 where
     A: Asset,
@@ -421,34 +461,9 @@ where
     fn load_sub_assets(
         &mut self,
         progress: &mut ProgressCounter,
-        system_data: &mut Self::SystemData,
+        (loader, _, storage): &mut Self::SystemData,
     ) -> Result<bool, Error> {
-        let handle = match self {
-            AssetPrefab::File(name, format, options) => Some(system_data.0.load(
-                name.as_ref(),
-                format.clone(),
-                options.clone(),
-                progress,
-                &system_data.2,
-            )),
-            AssetPrefab::FileOrElse(name, format, options, or_else) => {
-                Some(system_data.0.load_or_else(
-                    name.as_ref(),
-                    format.clone(),
-                    options.clone(),
-                    progress,
-                    &system_data.2,
-                    or_else.clone(),
-                ))
-            }
-            AssetPrefab::Handle(..) => None,
-        };
-        if let Some(handle) = handle {
-            *self = AssetPrefab::Handle(handle);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self.do_load_sub_assets(progress, loader, storage)
     }
 }
 
